@@ -8,6 +8,7 @@ import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
 
+import open3d as o3d
 
 class StandardDatasetBase(Dataset):
     """
@@ -103,7 +104,7 @@ class ImageConditionedMixin:
     def get_instance(self, root, instance):
         pack = super().get_instance(root, instance)
        
-        image_root = os.path.join(root, 'renders_cond', instance)
+        image_root = os.path.join(root, 'renders_dmg_sketches', instance)
         with open(os.path.join(image_root, 'transforms.json')) as f:
             metadata = json.load(f)
         n_views = len(metadata['frames'])

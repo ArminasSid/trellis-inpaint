@@ -1,11 +1,18 @@
 from typing import *
 import torch
 import torch.nn.functional as F
+from torch import nn
 from torchvision import transforms
 import numpy as np
 from PIL import Image
 
 from ....utils import dist_utils
+
+import sonata
+try:
+    import flash_attn
+except ImportError:
+    flash_attn = None
 
 
 class ImageConditionedMixin:

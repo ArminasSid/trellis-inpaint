@@ -141,9 +141,12 @@ class FlowMatchingTrainer(BasicTrainer):
             raise ValueError(f"Unknown t_schedule: {self.t_schedule['name']}")
         return t
 
+
     def training_losses(
         self,
         x_0: torch.Tensor,
+        known_x0: torch.Tensor = None,
+        latent_mask: torch.Tensor = None,
         cond=None,
         **kwargs
     ) -> Tuple[Dict, Dict]:
@@ -182,6 +185,80 @@ class FlowMatchingTrainer(BasicTrainer):
                 terms[f"bin_{i}"] = {"mse": mse_per_instance[time_bin == i].mean()}
 
         return terms, {}
+
+    # def training_losses(
+    #     self,
+    #     x_0: torch.Tensor,
+    #     known_x0: torch.Tensor = None,
+    #     latent_mask: torch.Tensor = None,
+    #     cond=None,
+    #     **kwargs
+    # ) -> Tuple[Dict, Dict]:
+    #     """
+    #     Compute training losses for a single timestep.
+
+    #     Args:
+    #         x_0: The [N x C x ...] tensor of noiseless inputs.
+    #         known_x0: The [N x C x ...] tensor of known inputs.
+    #         latent_mask: tensor of latent masks.
+    #         cond: The [N x ...] tensor of additional conditions.
+    #         kwargs: Additional arguments to pass to the backbone.
+
+    #     Returns:
+    #         a dict with the key "loss" containing a tensor of shape [N].
+    #         may also contain other keys for different terms.
+    #     """
+        
+    #     mask = latent_mask.to(x_0.device)
+
+    #     if mask.ndim == 4:
+    #         mask = mask.unsqueeze(1)            
+
+    #     noise = torch.randn_like(x_0)
+    #     noise_known = torch.randn_like(x_0)
+
+    #     t = self.sample_t(x_0.shape[0]).to(x_0.device).float()
+
+    #     x_t_unknown = self.diffuse(x_0, t, noise=noise)
+    #     x_t_known = self.diffuse(known_x0, t, noise=noise_known)
+
+    #     # Repaint principle 
+    #     x_t = (mask * x_t_known + (1.0 - mask) * x_t_unknown)
+
+    #     cond = self.get_cond(cond, **kwargs)
+
+    #     pred = self.training_models['denoiser'](
+    #         x_t,
+    #         t * 1000,
+    #         cond,
+    #         **kwargs
+    #     )
+
+    #     target = self.get_v(x_0, noise, t)
+
+    #     # Loss to target only the unknown region
+    #     loss_map = (pred - target) ** 2
+
+
+    #     loss_weight = (1.0 - mask)
+    #     mse_loss = (loss_map * loss_weight).sum() / (loss_weight.sum() + 1e-8)
+
+    #     terms = edict()
+    #     terms["mse"] = mse_loss
+    #     terms["loss"] = mse_loss
+
+        
+    #     # log loss with time bins
+    #     mse_per_instance = np.array([
+    #         F.mse_loss(pred[i], target[i]).item()
+    #         for i in range(x_0.shape[0])
+    #     ])
+    #     time_bin = np.digitize(t.cpu().numpy(), np.linspace(0, 1, 11)) - 1
+    #     for i in range(10):
+    #         if (time_bin == i).sum() != 0:
+    #             terms[f"bin_{i}"] = {"mse": mse_per_instance[time_bin == i].mean()}
+
+    #     return terms, {}
     
     @torch.no_grad()
     def run_snapshot(
@@ -211,6 +288,8 @@ class FlowMatchingTrainer(BasicTrainer):
             sample_gt.append(data['x_0'])
             cond_vis.append(self.vis_cond(**data))
             del data['x_0']
+            del data['known_x0']
+            del data['latent_mask']
             args = self.get_inference_cond(**data)
             res = sampler.sample(
                 self.models['denoiser'],
@@ -232,6 +311,100 @@ class FlowMatchingTrainer(BasicTrainer):
         }))
         
         return sample_dict
+    
+    # @torch.no_grad()
+    # def run_snapshot(
+    #     self,
+    #     num_samples: int,
+    #     batch_size: int,
+    #     verbose: bool = False,
+    # ) -> Dict:
+    #     dataloader = DataLoader(
+    #         copy.deepcopy(self.dataset),
+    #         batch_size=batch_size,
+    #         shuffle=True,
+    #         num_workers=0,
+    #         collate_fn=self.dataset.collate_fn if hasattr(self.dataset, 'collate_fn') else None,
+    #     )
+
+    #     # inference
+    #     sampler = self.get_sampler()
+    #     sample_gt = []
+    #     sample = []
+    #     cond_vis = []
+    #     for i in range(0, num_samples, batch_size):
+    #         batch = min(batch_size, num_samples - i)
+    #         data = next(iter(dataloader))
+    #         data = {k: v[:batch].cuda() if isinstance(v, torch.Tensor) else v[:batch] for k, v in data.items()}
+
+    #         sample_gt.append(data['x_0'])
+
+    #         noise = torch.randn_like(data['x_0'])
+
+    #         known_x0 = data["known_x0"].clone()
+
+    #         mask = data["latent_mask"].clone()
+
+    #         if mask.ndim == 4:
+    #             mask = mask.unsqueeze(1)
+            
+    #         known_noise = torch.randn_like(known_x0)
+
+    #         cond_vis.append(self.vis_cond(**data))
+
+    #         del data['x_0']
+    #         del data['known_x0']
+    #         del data['latent_mask']
+
+    #         args = self.get_inference_cond(**data)
+
+    #         # Sampling function
+    #         def model_fn(x_t, t, cond, **kwargs):
+
+    #             t_normalized = t / 1000.0
+
+    #             known_xt = self.diffuse(
+    #                 known_x0,
+    #                 t_normalized,
+    #                 noise=known_noise
+    #             )
+
+    #             x_t = (mask * known_xt + (1.0 - mask) * x_t)
+
+    #             pred = self.models['denoiser'](
+    #                 x_t,
+    #                 t,
+    #                 cond,
+    #                 **kwargs
+    #             )
+
+    #             return pred
+
+    #         res = sampler.sample(
+    #             model_fn,
+    #             noise=noise,
+    #             **args,
+    #             steps=50,
+    #             cfg_strength=3.0,
+    #             verbose=verbose,
+    #         )
+
+    #         final_sample = (mask * known_x0 + (1.0 - mask) * res.samples)
+
+    #         sample.append(final_sample)
+
+    #     sample_gt = torch.cat(sample_gt, dim=0)
+    #     sample = torch.cat(sample, dim=0)
+    #     sample_dict = {
+    #         'sample_gt': {'value': sample_gt, 'type': 'sample'},
+    #         'sample': {'value': sample, 'type': 'sample'},
+    #     }
+    #     sample_dict.update(dict_reduce(cond_vis, None, {
+    #         'value': lambda x: torch.cat(x, dim=0),
+    #         'type': lambda x: x[0],
+    #     }))
+        
+    #     return sample_dict
 
     
 class FlowMatchingCFGTrainer(ClassifierFreeGuidanceMixin, FlowMatchingTrainer):

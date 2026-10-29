@@ -29,7 +29,7 @@
     "trainer": {
         "name": "TextConditionedFlowMatchingCFGTrainer",
         "args": {
-            "max_steps": 1000000,
+            "max_steps": 60000,
             "batch_size_per_gpu": 8,
             "batch_split": 1,
             "optimizer": {

@@ -8,20 +8,66 @@ from easydict import EasyDict as edict
 from functools import partial
 import numpy as np
 import open3d as o3d
-import utils3d
+from utils3d.io import write_ply, read_ply
 
 
 def _voxelize(file, sha256, output_dir):
-    mesh = o3d.io.read_triangle_mesh(os.path.join(output_dir, 'renders', sha256, 'mesh.ply'))
-    # clamp vertices to the range [-0.5, 0.5]
-    vertices = np.clip(np.asarray(mesh.vertices), -0.5 + 1e-6, 0.5 - 1e-6)
-    mesh.vertices = o3d.utility.Vector3dVector(vertices)
-    voxel_grid = o3d.geometry.VoxelGrid.create_from_triangle_mesh_within_bounds(mesh, voxel_size=1/64, min_bound=(-0.5, -0.5, -0.5), max_bound=(0.5, 0.5, 0.5))
-    vertices = np.array([voxel.grid_index for voxel in voxel_grid.get_voxels()])
-    assert np.all(vertices >= 0) and np.all(vertices < 64), "Some vertices are out of bounds"
-    vertices = (vertices + 0.5) / 64 - 0.5
-    utils3d.io.write_ply(os.path.join(output_dir, 'voxels', f'{sha256}.ply'), vertices)
-    return {'sha256': sha256, 'voxelized': True, 'num_voxels': len(vertices)}
+
+    def voxelize_from_mesh(mesh_path, output_path):
+        if not os.path.exists(mesh_path):
+            print(f"Missing mesh: {mesh_path}")
+            return None
+
+        mesh = o3d.io.read_triangle_mesh(mesh_path)
+
+        # Guard against empty / invalid mesh (prevents segfault)
+        if mesh.is_empty() or len(mesh.vertices) == 0:
+            print(f"Empty mesh: {mesh_path}")
+            return None
+
+        vertices = np.asarray(mesh.vertices)
+        vertices = np.clip(vertices, -0.5 + 1e-6, 0.5 - 1e-6)
+        mesh.vertices = o3d.utility.Vector3dVector(vertices)
+
+        voxel_grid = o3d.geometry.VoxelGrid.create_from_triangle_mesh_within_bounds(
+            mesh,
+            voxel_size=1/64,
+            min_bound=(-0.5, -0.5, -0.5),
+            max_bound=(0.5, 0.5, 0.5)
+        )
+
+        voxels = voxel_grid.get_voxels()
+        if len(voxels) == 0:
+            print(f"No voxels generated: {mesh_path}")
+            return 0
+
+        vertices = np.array([v.grid_index for v in voxels])
+
+        if not (np.all(vertices >= 0) and np.all(vertices < 64)):
+            print(f"Out-of-bounds voxels: {mesh_path}")
+            return None
+
+        vertices = (vertices + 0.5) / 64 - 0.5
+        write_ply(output_path, vertices)
+
+        return len(vertices)
+
+    mesh_path = os.path.join(output_dir, 'renders', sha256, 'mesh.ply')
+    voxel_output = os.path.join(output_dir, 'voxels', f'{sha256}.ply')
+
+    num_voxels = voxelize_from_mesh(mesh_path, voxel_output)
+
+    dmg_mesh_path = os.path.join(output_dir, 'renders_dmg', sha256, 'mesh.ply')
+    dmg_voxel_output = os.path.join(output_dir, 'voxels_dmg', f'{sha256}.ply')
+
+    voxelize_from_mesh(dmg_mesh_path, dmg_voxel_output)
+
+    return {
+        'sha256': sha256,
+        'voxelized': True,
+        'num_voxels': num_voxels
+    }
+
 
 
 if __name__ == '__main__':
@@ -44,6 +90,7 @@ if __name__ == '__main__':
     opt = edict(vars(opt))
 
     os.makedirs(os.path.join(opt.output_dir, 'voxels'), exist_ok=True)
+    os.makedirs(os.path.join(opt.output_dir, 'voxels_dmg'), exist_ok=True)
 
     # get file list
     if not os.path.exists(os.path.join(opt.output_dir, 'metadata.csv')):
@@ -73,7 +120,7 @@ if __name__ == '__main__':
     # filter out objects that are already processed
     for sha256 in copy.copy(metadata['sha256'].values):
         if os.path.exists(os.path.join(opt.output_dir, 'voxels', f'{sha256}.ply')):
-            pts = utils3d.io.read_ply(os.path.join(opt.output_dir, 'voxels', f'{sha256}.ply'))[0]
+            pts = read_ply(os.path.join(opt.output_dir, 'voxels', f'{sha256}.ply'))[0]
             records.append({'sha256': sha256, 'voxelized': True, 'num_voxels': len(pts)})
             metadata = metadata[metadata['sha256'] != sha256]
                 

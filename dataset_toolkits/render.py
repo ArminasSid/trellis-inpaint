@@ -13,48 +13,95 @@ from utils import sphere_hammersley_sequence
 
 
 BLENDER_LINK = 'https://download.blender.org/release/Blender3.0/blender-3.0.1-linux-x64.tar.xz'
-BLENDER_INSTALLATION_PATH = '/tmp'
+BLENDER_INSTALLATION_PATH = '/tmp/'
 BLENDER_PATH = f'{BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64/blender'
 
 def _install_blender():
     if not os.path.exists(BLENDER_PATH):
-        os.system('sudo apt-get update')
-        os.system('sudo apt-get install -y libxrender1 libxi6 libxkbcommon-x11-0 libsm6')
+        # Install dependencies if not present
+        # os.system('sudo apt-get update')
+        # os.system('sudo apt-get install -y libxrender1 libxi6 libxkbcommon-x11-0 libsm6')
         os.system(f'wget {BLENDER_LINK} -P {BLENDER_INSTALLATION_PATH}')
         os.system(f'tar -xvf {BLENDER_INSTALLATION_PATH}/blender-3.0.1-linux-x64.tar.xz -C {BLENDER_INSTALLATION_PATH}')
 
 
 def _render(file_path, sha256, output_dir, num_views):
     output_folder = os.path.join(output_dir, 'renders', sha256)
-    
+
     # Build camera {yaw, pitch, radius, fov}
     yaws = []
     pitchs = []
     offset = (np.random.rand(), np.random.rand())
+
     for i in range(num_views):
         y, p = sphere_hammersley_sequence(i, num_views, offset)
         yaws.append(y)
         pitchs.append(p)
+
     radius = [2] * num_views
     fov = [40 / 180 * np.pi] * num_views
-    views = [{'yaw': y, 'pitch': p, 'radius': r, 'fov': f} for y, p, r, f in zip(yaws, pitchs, radius, fov)]
-    
-    args = [
-        BLENDER_PATH, '-b', '-P', os.path.join(os.path.dirname(__file__), 'blender_script', 'render.py'),
+
+    views = [
+        {'yaw': y, 'pitch': p, 'radius': r, 'fov': f}
+        for y, p, r, f in zip(yaws, pitchs, radius, fov)
+    ]
+
+    base_args = [
+        BLENDER_PATH,
+        '-b',
+        '-P',
+        os.path.join(os.path.dirname(__file__), 'blender_script', 'render.py'),
         '--',
         '--views', json.dumps(views),
-        '--object', os.path.expanduser(file_path),
         '--resolution', '512',
-        '--output_folder', output_folder,
         '--engine', 'CYCLES',
         '--save_mesh',
     ]
+
+    args = base_args + [
+        '--object', os.path.expanduser(file_path),
+        '--output_folder', output_folder,
+    ]
+
     if file_path.endswith('.blend'):
         args.insert(1, file_path)
-    
+
     call(args, stdout=DEVNULL, stderr=DEVNULL)
-    
-    if os.path.exists(os.path.join(output_folder, 'transforms.json')):
+
+    # Read the normalization (scale + offset) used for the intact object
+    tf_path = os.path.join(output_folder, 'transforms.json')
+    if not os.path.exists(tf_path):
+        return None  # intact render failed, so skip the damaged one
+    with open(tf_path) as f:
+        tf = json.load(f)
+
+    parts = os.path.normpath(file_path).split(os.sep)
+
+    try:
+        idx = parts.index("objects")
+    except ValueError:
+        raise ValueError(f"'objects' not found in path: {file_path}")
+
+    # replace only that folder
+    parts[idx] = "objects_dmg"
+
+    dmg_file_path = os.sep.join(parts)
+
+    dmg_output_folder = os.path.join(output_dir, 'renders_dmg', sha256)
+
+    args_dmg = base_args + [
+        '--object', os.path.expanduser(dmg_file_path),
+        '--output_folder', dmg_output_folder,
+        '--norm_scale', repr(tf['scale']),          # reuse the intact normalization
+        '--norm_offset', json.dumps(tf['offset']),
+    ]
+
+    if dmg_file_path.endswith('.blend'):
+        args_dmg.insert(1, dmg_file_path)
+
+    call(args_dmg, stdout=DEVNULL, stderr=DEVNULL)
+
+    if os.path.exists(tf_path) and os.path.exists(os.path.join(dmg_output_folder, 'transforms.json')):
         return {'sha256': sha256, 'rendered': True}
 
 
@@ -68,7 +115,7 @@ if __name__ == '__main__':
                         help='Filter objects with aesthetic score lower than this value')
     parser.add_argument('--instances', type=str, default=None,
                         help='Instances to process')
-    parser.add_argument('--num_views', type=int, default=150,
+    parser.add_argument('--num_views', type=int, default=5,
                         help='Number of views to render')
     dataset_utils.add_args(parser)
     parser.add_argument('--rank', type=int, default=0)
@@ -81,7 +128,7 @@ if __name__ == '__main__':
     
     # install blender
     print('Checking blender...', flush=True)
-    _install_blender()
+    # _install_blender()
 
     # get file list
     if not os.path.exists(os.path.join(opt.output_dir, 'metadata.csv')):
@@ -108,7 +155,8 @@ if __name__ == '__main__':
 
     # filter out objects that are already processed
     for sha256 in copy.copy(metadata['sha256'].values):
-        if os.path.exists(os.path.join(opt.output_dir, 'renders', sha256, 'transforms.json')):
+        if (os.path.exists(os.path.join(opt.output_dir, 'renders', sha256, 'transforms.json')) and
+                os.path.exists(os.path.join(opt.output_dir, 'renders_dmg', sha256, 'transforms.json'))):
             records.append({'sha256': sha256, 'rendered': True})
             metadata = metadata[metadata['sha256'] != sha256]
                 

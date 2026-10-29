@@ -3,6 +3,7 @@ import json
 from typing import *
 import numpy as np
 import torch
+import torch.nn.functional as F
 import utils3d
 from ..representations.octree import DfsOctree as Octree
 from ..renderers import OctreeRenderer
@@ -166,9 +167,39 @@ class SparseStructureLatent(SparseStructureLatentVisMixin, StandardDatasetBase):
         z = torch.tensor(latent['mean']).float()
         if self.normalization is not None:
             z = (z - self.mean) / self.std
+        
+        latent_dmg = np.load(os.path.join(root, 'ss_latents_dmg', self.latent_model, f'{instance}.npz'))
+        z_dmg = torch.tensor(latent_dmg['mean']).float()
+        if self.normalization is not None:
+            z_dmg = (z_dmg - self.mean) / self.std
+            
+            
+        # Mask
+        points_dmg = utils3d.io.read_ply(os.path.join(root, 'voxels_dmg', f'{instance}.ply'))[0]
+        points_dmg = torch.tensor(points_dmg, dtype=torch.float32)
+        idx = torch.floor((points_dmg + 0.5) * 64).long()
+        voxel_idx = idx.clamp(0, 63)
+        
+        flat_idx = (
+            voxel_idx[:, 0] * 64 * 64 +
+            voxel_idx[:, 1] * 64 +
+            voxel_idx[:, 2]
+        )
 
+        mask_flat = torch.zeros(64 * 64 * 64)
+        mask_flat.scatter_(0, flat_idx, 1.0)
+        mask64 = mask_flat.view(64, 64, 64)
+        
+        latent_mask = F.max_pool3d(
+            mask64[None, None].float(),
+            kernel_size=4,
+            stride=4
+        )[0, 0]
+        
         pack = {
             'x_0': z,
+            'known_x0': z_dmg,
+            'latent_mask': latent_mask
         }
         return pack
     

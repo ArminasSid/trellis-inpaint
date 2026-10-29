@@ -87,7 +87,7 @@ class BasicTrainer(Trainer):
                     device_ids=[self.local_rank],
                     output_device=self.local_rank,
                     bucket_cap_mb=128,
-                    find_unused_parameters=False
+                    find_unused_parameters=True
                 )
                 for name, model in self.models.items()
             }
@@ -183,7 +183,7 @@ class BasicTrainer(Trainer):
         for name, model in self.models.items():
             model_ckpt = torch.load(read_file_dist(os.path.join(load_dir, 'ckpts', f'{name}_step{step:07d}.pt')), map_location=self.device, weights_only=True)
             model_ckpts[name] = model_ckpt
-            model.load_state_dict(model_ckpt)
+            model.load_state_dict(model_ckpt, strict=False)
             if self.fp16_mode == 'inflat_all':
                 model.convert_to_fp16()
         self._state_dicts_to_master_params(self.master_params, model_ckpts)

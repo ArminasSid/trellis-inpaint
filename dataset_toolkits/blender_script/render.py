@@ -34,26 +34,42 @@ EXT = {
 }
 
 def init_render(engine='CYCLES', resolution=512, geo_mode=False):
-    bpy.context.scene.render.engine = engine
-    bpy.context.scene.render.resolution_x = resolution
-    bpy.context.scene.render.resolution_y = resolution
-    bpy.context.scene.render.resolution_percentage = 100
-    bpy.context.scene.render.image_settings.file_format = 'PNG'
-    bpy.context.scene.render.image_settings.color_mode = 'RGBA'
+    preferences = bpy.context.preferences
+    cycles_prefs = preferences.addons["cycles"].preferences
+
+    # Enable GPU compute device
+    cycles_prefs.compute_device_type = "CUDA"  # Use "OPTIX" for RTX, "METAL" for Apple
+    bpy.context.scene.render.engine = "CYCLES"
+    bpy.context.scene.cycles.device = "GPU"
+
+    bpy.context.scene.render.image_settings.file_format = "PNG"
+    bpy.context.scene.render.image_settings.color_mode = "RGBA"  # include alpha
+
     bpy.context.scene.render.film_transparent = True
-    
-    bpy.context.scene.cycles.device = 'GPU'
-    bpy.context.scene.cycles.samples = 128 if not geo_mode else 1
-    bpy.context.scene.cycles.filter_type = 'BOX'
-    bpy.context.scene.cycles.filter_width = 1
-    bpy.context.scene.cycles.diffuse_bounces = 1
-    bpy.context.scene.cycles.glossy_bounces = 1
-    bpy.context.scene.cycles.transparent_max_bounces = 3 if not geo_mode else 0
-    bpy.context.scene.cycles.transmission_bounces = 3 if not geo_mode else 1
-    bpy.context.scene.cycles.use_denoising = True
-        
-    bpy.context.preferences.addons['cycles'].preferences.get_devices()
-    bpy.context.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
+
+    for device in cycles_prefs.devices:
+        device.use = True
+
+    scene = bpy.context.scene
+
+    render = scene.render
+    render.resolution_x = 512
+    render.resolution_y = 512
+
+    scene.cycles.samples = 4
+    scene.cycles.use_adaptive_sampling = True
+
+    scene.cycles.max_bounces = 1
+    scene.cycles.diffuse_bounces = 1
+    scene.cycles.glossy_bounces = 1
+    scene.cycles.transmission_bounces = 1
+    scene.cycles.transparent_max_bounces = 1
+
+    scene.cycles.use_simplify = True
+    scene.cycles.simplify_subdivision_render = 1
+    scene.cycles.simplify_child_particles_render = 0
+
+    scene.cycles.use_denoising = True
     
 def init_nodes(save_depth=False, save_normal=False, save_albedo=False, save_mist=False):
     if not any([save_depth, save_normal, save_albedo, save_mist]):
@@ -363,41 +379,35 @@ def scene_bbox() -> Tuple[Vector, Vector]:
         raise RuntimeError("no objects in scene to compute bounding box for")
     return Vector(bbox_min), Vector(bbox_max)
 
-def normalize_scene() -> Tuple[float, Vector]:
-    """Normalizes the scene by scaling and translating it to fit in a unit cube centered
-    at the origin.
-
-    Mostly taken from the Point-E / Shap-E rendering script
-    (https://github.com/openai/point-e/blob/main/point_e/evals/scripts/blender_script.py#L97-L112),
-    but fix for multiple root objects: (see bug report here:
-    https://github.com/openai/shap-e/pull/60).
-
-    Returns:
-        Tuple[float, Vector]: The scale factor and the offset applied to the scene.
-    """
+def normalize_scene(fixed_scale=None, fixed_offset=None) -> Tuple[float, Vector]:
     scene_root_objects = [obj for obj in bpy.context.scene.objects.values() if not obj.parent]
-    if len(scene_root_objects) > 1:
-        # create an empty object to be used as a parent for all root objects
-        scene = bpy.data.objects.new("ParentEmpty", None)
-        bpy.context.scene.collection.objects.link(scene)
 
-        # parent all root objects to the empty object
-        for obj in scene_root_objects:
-            obj.parent = scene
-    else:
-        scene = scene_root_objects[0]
+    # Always parent everything under a fresh empty at the world origin, so the
+    # normalization is p' = scale * p + offset regardless of each file's root origin
+    scene = bpy.data.objects.new("ParentEmpty", None)
+    bpy.context.scene.collection.objects.link(scene)
+    for obj in scene_root_objects:
+        obj.parent = scene
 
-    bbox_min, bbox_max = scene_bbox()
-    scale = 1 / max(bbox_max - bbox_min)
-    scene.scale = scene.scale * scale
-
-    # Apply scale to matrix_world.
     bpy.context.view_layer.update()
-    bbox_min, bbox_max = scene_bbox()
-    offset = -(bbox_min + bbox_max) / 2
-    scene.matrix_world.translation += offset
+
+    if fixed_scale is not None and fixed_offset is not None:
+        scale = fixed_scale
+        offset = Vector(fixed_offset)
+        scene.scale = (scale, scale, scale)
+        scene.location = offset
+        bpy.context.view_layer.update()
+    else:
+        bbox_min, bbox_max = scene_bbox()
+        scale = 1 / max(bbox_max - bbox_min)
+        scene.scale = scene.scale * scale
+        bpy.context.view_layer.update()
+
+        bbox_min, bbox_max = scene_bbox()
+        offset = -(bbox_min + bbox_max) / 2
+        scene.matrix_world.translation += offset
+
     bpy.ops.object.select_all(action="DESELECT")
-    
     return scale, offset
 
 def get_transform_matrix(obj: bpy.types.Object) -> list:
@@ -435,7 +445,8 @@ def main(arg):
     print('[INFO] Scene initialized.')
     
     # normalize scene
-    scale, offset = normalize_scene()
+    fixed_offset = json.loads(arg.norm_offset) if arg.norm_offset else None
+    scale, offset = normalize_scene(arg.norm_scale, fixed_offset)
     print('[INFO] Scene normalized.')
     
     # Initialize camera and lighting
@@ -521,6 +532,8 @@ if __name__ == '__main__':
     parser.add_argument('--save_mist', action='store_true', help='Save the mist distance maps.')
     parser.add_argument('--split_normal', action='store_true', help='Split the normals of the mesh.')
     parser.add_argument('--save_mesh', action='store_true', help='Save the mesh as a .ply file.')
+    parser.add_argument('--norm_scale', type=float, default=None, help='Use this scale instead of computing one.')
+    parser.add_argument('--norm_offset', type=str, default=None, help='JSON [x,y,z] offset to use instead of computing one.')
     argv = sys.argv[sys.argv.index("--") + 1:]
     args = parser.parse_args(argv)
 

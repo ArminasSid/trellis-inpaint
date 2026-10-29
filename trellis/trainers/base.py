@@ -16,6 +16,17 @@ from ..utils.general_utils import *
 from ..utils.data_utils import recursive_to_device, cycle, ResumableSampler
 
 
+def make_json_safe(obj):
+    if isinstance(obj, (np.floating, np.integer)):
+        return obj.item()
+    elif isinstance(obj, dict):
+        return {k: make_json_safe(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [make_json_safe(v) for v in obj]
+    else:
+        return obj
+
+
 class Trainer:
     """
     Base class for training.
@@ -413,7 +424,7 @@ class Trainer:
                 if self.step % self.i_log == 0:
                     ## save to log file
                     log_str = '\n'.join([
-                        f'{step}: {json.dumps(log)}' for step, log in log
+                        f'{step}: {json.dumps(make_json_safe(log))}' for step, log in log
                     ])
                     with open(os.path.join(self.output_dir, 'log.txt'), 'a') as log_file:
                         log_file.write(log_str + '\n')
